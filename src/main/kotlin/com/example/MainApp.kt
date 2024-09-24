@@ -30,19 +30,20 @@ class MainApp : Application() {
         val fileListView = ListView<String>()
 
         // Button to select files
-        val chooseFileButton = Button("Select Video Files")
-        chooseFileButton.setOnAction {
-            val fileChooser = FileChooser()
-            fileChooser.title = "Choose Video Files"
-            fileChooser.extensionFilters.add(
-                FileChooser.ExtensionFilter(
-                    "Video Files", "*.mp4", "*.avi", "*.mov", "*.mkv", "*.flv"
+        val chooseFileButton = Button("Select Video Files").apply {
+            setOnAction {
+                val fileChooser = FileChooser()
+                fileChooser.title = "Choose Video Files"
+                fileChooser.extensionFilters.add(
+                    FileChooser.ExtensionFilter(
+                        "Video Files", "*.mp4", "*.avi", "*.mov", "*.mkv", "*.flv"
+                    )
                 )
-            )
-            val selectedFiles = fileChooser.showOpenMultipleDialog(primaryStage)
-            if (selectedFiles != null) {
-                fileListView.items.clear()
-                fileListView.items.addAll(selectedFiles.map { it.absolutePath })
+                val selectedFiles = fileChooser.showOpenMultipleDialog(primaryStage)
+                if (selectedFiles != null) {
+                    fileListView.items.clear()
+                    fileListView.items.addAll(selectedFiles.map { it.absolutePath })
+                }
             }
         }
 
@@ -56,7 +57,9 @@ class MainApp : Application() {
         // Field for displaying logs
         val logArea = TextArea().apply {
             isEditable = false // Make the console read-only
-            setStyle("-fx-font-family: 'monospace';") // Set monospaced font
+            style = "-fx-font-family: 'monospace';" // Set monospaced font
+            prefWidth = 500.0 // Preferred width
+            prefHeight = 500.0 // Preferred height
         }
 
         // Redirect standard output to the log with UTF-8 support
@@ -66,19 +69,20 @@ class MainApp : Application() {
 
         // Progress bar for video conversion
         val progressBar = ProgressBar(0.0).apply {
-            isVisible = false // Initially hidden
+            isVisible = true // Initially hidden
         }
 
         // Buttons for conversion and cancellation
         val convertButton = Button("Convert")
         val cancelButton = Button("Cancel").apply {
             isDisable = true // Disable cancel button initially
+            isVisible = false
         }
 
         convertButton.setOnAction {
             val selectedFormat = formatChoiceBox.value
             val selectedFiles = fileListView.items
-
+            convertButton.isDisable = true
             if (selectedFiles.isEmpty()) {
                 showAlert("Error", "Please select at least one file")
                 return@setOnAction
@@ -94,7 +98,11 @@ class MainApp : Application() {
             var processedFiles = 0
 
             selectedFiles.forEach { filePath ->
-                val job = coroutineScope.launch(Dispatchers.IO) {
+                val job = coroutineScope.launch(Dispatchers.IO + CoroutineExceptionHandler { _, exception ->
+                    Platform.runLater {
+                        showAlert("Error", "Failed to convert $filePath: ${exception.message}")
+                    }
+                }) {
                     val videoCompressor = VideoCompressor(ffmpegHandler, selectedFormat)
                     try {
                         videoCompressor.compressVideo(filePath) // Call compressVideo directly for each file
@@ -108,10 +116,6 @@ class MainApp : Application() {
                     } catch (e: CancellationException) {
                         withContext(Dispatchers.Main) {
                             println("Conversion cancelled for $filePath")
-                        }
-                    } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            showAlert("Error", "Failed to convert $filePath: ${e.message}")
                         }
                     }
                 }
@@ -155,19 +159,45 @@ class MainApp : Application() {
         alert.showAndWait()
     }
 
-    // Class to redirect output to TextArea with UTF-8 support
     class ConsoleOutputStream(private val textArea: TextArea) : OutputStream() {
         private val buffer = StringBuilder()
 
         override fun write(b: Int) {
-            if (b == '\n'.toInt()) {
-                Platform.runLater { // Update UI on the JavaFX Application Thread
+            val char = b.toChar()
+
+            Platform.runLater {
+                val scrollPosition = textArea.scrollTop
+                val contentHeight = calculateContentHeight(textArea)
+                val visibleHeight = textArea.height
+                val atBottom = scrollPosition + visibleHeight >= contentHeight
+
+                if (char == '\r') {
+                    val currentText = buffer.toString()
+                    val lastIndex = textArea.text.lastIndexOf('\n')
+                    if (lastIndex != -1) {
+                        textArea.deleteText(lastIndex + 1, textArea.length)
+                    } else {
+                        textArea.clear()
+                    }
+                    textArea.appendText(currentText)
+                } else if (char == '\n') {
                     textArea.appendText(buffer.toString() + "\n")
+                    buffer.setLength(0)
+                } else {
+                    buffer.append(char)
                 }
-                buffer.setLength(0)
-            } else {
-                buffer.append(b.toChar())
+
+                if (atBottom) {
+                    textArea.scrollTop = Double.MAX_VALUE
+                }
             }
+        }
+
+        // Function to calculate the content height
+        private fun calculateContentHeight(textArea: TextArea): Double {
+            val lines = textArea.text.split("\n").size
+            val fontHeight = textArea.font.size
+            return lines * fontHeight
         }
     }
 
