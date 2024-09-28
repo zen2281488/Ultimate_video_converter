@@ -1,35 +1,34 @@
 package com.example
 
-import VideoCompressor
 import javafx.application.Application
 import javafx.application.Platform
 import javafx.geometry.Insets
 import javafx.scene.Scene
 import javafx.scene.control.*
+import javafx.scene.layout.GridPane
 import javafx.scene.layout.HBox
 import javafx.scene.layout.VBox
 import javafx.stage.FileChooser
 import javafx.stage.Stage
 import kotlinx.coroutines.*
+import java.io.File
 import java.io.OutputStream
 import java.io.PrintStream
-import java.nio.charset.StandardCharsets
 
 class MainApp : Application() {
 
-    private val conversionJobs = mutableListOf<Job>() // Store all conversion jobs
-    private val coroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob()) // Coroutine scope for the application
+    private val conversionJobs = mutableListOf<Job>()
+    private val coroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun start(primaryStage: Stage) {
         primaryStage.title = "Video Converter"
 
         val ffmpegHandler = FFmpegHandler()
 
-        // Field for displaying selected files
-        val selectedFilesLabel = Label("Selected Files:")
-        val fileListView = ListView<String>()
+        // Поле для отображения выбранных файлов
+        val fileListView = VBox(10.0)
 
-        // Button to select files
+        // Кнопка для выбора файлов
         val chooseFileButton = Button("Select Video Files").apply {
             setOnAction {
                 val fileChooser = FileChooser()
@@ -41,130 +40,122 @@ class MainApp : Application() {
                 )
                 val selectedFiles = fileChooser.showOpenMultipleDialog(primaryStage)
                 if (selectedFiles != null) {
-                    fileListView.items.clear()
-                    fileListView.items.addAll(selectedFiles.map { it.absolutePath })
+                    fileListView.children.clear()
+                    selectedFiles.forEachIndexed { index, file ->
+                        addFileToUI(fileListView, index + 1, file)
+                    }
                 }
             }
         }
 
-        // Field to select conversion format
+        // Поле для выбора формата конвертации
         val formatLabel = Label("Select Format for Conversion:")
         val formatChoiceBox = ChoiceBox<String>().apply {
             items.addAll("mp4", "avi", "mov", "mkv", "flv")
-            value = "mp4" // default value
+            value = "mp4"
         }
 
-        // Field for displaying logs
+        val sizeLabel = Label("Select video Size for Conversion (3:2 display resolutions):")
+        val sizeChoiceBox = ChoiceBox<String>().apply {
+            items.addAll("360p", "480p", "720p", "1080p", "2K", "4K")
+            value = "480p"
+        }
+
+        // Поле для отображения логов
         val logArea = TextArea().apply {
-            isEditable = false // Make the console read-only
-            style = "-fx-font-family: 'monospace';" // Set monospaced font
-            prefWidth = 500.0 // Preferred width
-            prefHeight = 500.0 // Preferred height
+            isEditable = false
+            style = "-fx-font-family: 'monospace';"
+            prefWidth = 500.0
+            prefHeight = 500.0
         }
 
-        // Redirect standard output to the log with UTF-8 support
+        // Перенаправляем вывод в консоль
         val outputStream = ConsoleOutputStream(logArea)
         System.setOut(PrintStream(outputStream, true, Charsets.UTF_8.name()))
         System.setErr(PrintStream(outputStream, true, Charsets.UTF_8.name()))
 
-        // Progress bar for video conversion
-        val progressBar = ProgressBar(0.0).apply {
-            isVisible = true // Initially hidden
-        }
-
-        // Buttons for conversion and cancellation
+        // Кнопки для конвертации и отмены
         val convertButton = Button("Convert")
         val cancelButton = Button("Cancel").apply {
-            isDisable = true // Disable cancel button initially
+            isDisable = true
             isVisible = false
         }
 
         convertButton.setOnAction {
             val selectedFormat = formatChoiceBox.value
-            val selectedFiles = fileListView.items
-            convertButton.isDisable = true
+            val selectedSize = sizeChoiceBox.value
+            val selectedFiles = fileListView.children.filterIsInstance<GridPane>()
+
             if (selectedFiles.isEmpty()) {
                 showAlert("Error", "Please select at least one file")
                 return@setOnAction
             }
 
-            // Start video compression for each selected file
-            conversionJobs.clear() // Clear previous jobs
-            cancelButton.isDisable = false // Enable cancel button
-            progressBar.progress = 0.0 // Reset progress bar
-            progressBar.isVisible = true // Show progress bar
+            convertButton.isDisable = true
+            cancelButton.isDisable = false
+            conversionJobs.clear()
 
-            val totalFiles = selectedFiles.size
-            var processedFiles = 0
+            selectedFiles.forEach { gridPane ->
+                val fileLabel = gridPane.children[1] as Label
+                val progressBar = gridPane.children[2] as ProgressBar
+                val filePath = fileLabel.text
 
-            selectedFiles.forEach { filePath ->
-                val job = coroutineScope.launch(Dispatchers.IO + CoroutineExceptionHandler { _, exception ->
-                    Platform.runLater {
-                        showAlert("Error", "Failed to convert $filePath: ${exception.message}")
-                    }
-                }) {
-                    val videoCompressor = VideoCompressor(ffmpegHandler, selectedFormat)
+                val job = coroutineScope.launch(Dispatchers.IO) {
+                    val videoCompressor = VideoCompressor(ffmpegHandler, selectedFormat, selectedSize)
                     try {
-                        videoCompressor.compressVideo(filePath) // Call compressVideo directly for each file
-                        processedFiles++
-
-                        // Update progress on the main thread
-                        withContext(Dispatchers.Main) {
-                            progressBar.progress = processedFiles.toDouble() / totalFiles
-                            println("Conversion completed for $filePath")
+                        videoCompressor.compressVideo(filePath, progressBar)
+                        Platform.runLater {
+                            fileLabel.text = "Completed: $filePath"
+                            convertButton.isDisable = false
                         }
                     } catch (e: CancellationException) {
-                        withContext(Dispatchers.Main) {
-                            println("Conversion cancelled for $filePath")
+                        Platform.runLater {
+                            fileLabel.text = "Cancelled: $filePath"
                         }
                     }
                 }
-                conversionJobs.add(job) // Store the job reference
+                conversionJobs.add(job)
             }
 
             println("Conversion started...")
         }
 
         cancelButton.setOnAction {
-            conversionJobs.forEach { job -> job.cancel() } // Cancel all ongoing conversion jobs
-            conversionJobs.clear() // Clear the job list
-            ffmpegHandler.cancel() // Call the cancel method in VideoCompressor to terminate FFmpeg
-            cancelButton.isDisable = true // Disable cancel button
-            progressBar.isVisible = false // Hide progress bar
+            conversionJobs.forEach { job -> job.cancel() }
+            conversionJobs.clear()
+            cancelButton.isDisable = true
             println("All conversions cancelled.")
         }
 
-        // Layout for buttons
+        // Размещение кнопок
         val buttonLayout = HBox(10.0, convertButton, cancelButton)
 
-        // Create main layout and add elements
-        val vbox = VBox(10.0, selectedFilesLabel, fileListView, chooseFileButton, formatLabel, formatChoiceBox, buttonLayout, logArea, progressBar).apply {
+        // Основная компоновка
+        val vbox = VBox(10.0, chooseFileButton, formatLabel, formatChoiceBox, sizeLabel, sizeChoiceBox, buttonLayout, logArea, fileListView).apply {
             padding = Insets(20.0)
         }
 
-        // Create scene and show window
         val scene = Scene(vbox, 600.0, 400.0)
         primaryStage.scene = scene
         primaryStage.show()
 
-        // Example of initial logging
         println("Application started. Ready for use.")
     }
 
-    // Function to show alerts
-    private fun showAlert(title: String, content: String) {
-        val alert = Alert(Alert.AlertType.INFORMATION)
-        alert.title = title
-        alert.contentText = content
-        alert.showAndWait()
+    private fun addFileToUI(fileListView: VBox, index: Int, file: File) {
+        val gridPane = GridPane().apply {
+            hgap = 10.0
+            add(Label("$index."), 0, 0) // Нумерация файлов
+            add(Label(file.absolutePath), 1, 0) // Путь к файлу
+            add(ProgressBar(0.0).apply { prefWidth = 300.0 }, 2, 0) // Прогресс-бар
+        }
+        fileListView.children.add(gridPane)
     }
-
     class ConsoleOutputStream(private val textArea: TextArea) : OutputStream() {
         private val buffer = StringBuilder()
 
         override fun write(b: Int) {
             val char = b.toChar()
-
             Platform.runLater {
                 val scrollPosition = textArea.scrollTop
                 val contentHeight = calculateContentHeight(textArea)
@@ -193,12 +184,17 @@ class MainApp : Application() {
             }
         }
 
-        // Function to calculate the content height
         private fun calculateContentHeight(textArea: TextArea): Double {
             val lines = textArea.text.split("\n").size
             val fontHeight = textArea.font.size
             return lines * fontHeight
         }
+    }
+    private fun showAlert(title: String, content: String) {
+        val alert = Alert(Alert.AlertType.INFORMATION)
+        alert.title = title
+        alert.contentText = content
+        alert.showAndWait()
     }
 
     companion object {

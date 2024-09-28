@@ -1,74 +1,66 @@
-import com.example.FFmpegHandler
-import kotlinx.coroutines.*
-import java.util.concurrent.CancellationException
+package com.example
+
+import javafx.application.Platform
+import javafx.scene.control.ProgressBar
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import net.bramp.ffmpeg.FFmpegExecutor
+import net.bramp.ffmpeg.FFmpegUtils
+import net.bramp.ffmpeg.builder.FFmpegBuilder
+import net.bramp.ffmpeg.probe.FFmpegProbeResult
+import net.bramp.ffmpeg.progress.Progress
+import net.bramp.ffmpeg.progress.ProgressListener
 import java.io.File
-import kotlin.system.exitProcess
+import java.util.concurrent.TimeUnit
 
-
-class VideoCompressor(private val ffmpegHandler: FFmpegHandler, private val outputFormat: String) {
+class VideoCompressor(
+    private val ffmpegHandler: FFmpegHandler,
+    private val outputFormat: String,
+    private val outputSize: String
+) {
     private val availableFormats = listOf("mp4", "avi", "mov", "mkv", "flv")
 
-    init {
-        if (outputFormat !in availableFormats) {
-            println("Некорректный формат. Программа завершена.")
-            exitProcess(1)
-        }
-    }
+    // Resolutions for 4:3 aspect ratio
+    private val resolutionMap = mapOf(
+        "360p" to Pair(480, 360),
+        "480p" to Pair(640, 480),
+        "1080p" to Pair(1440, 1080),
+        "2K" to Pair(1920, 1440),
+        "4K" to Pair(2880, 2160)
+    )
 
-    private var process: Process? = null // Store the reference to the FFmpeg process
-
-    suspend fun compressVideo(inputPath: String) {
+    suspend fun compressVideo(inputPath: String, progressBar: ProgressBar) = withContext(Dispatchers.IO) {
         val filename = File(inputPath).name
         val outputFilename = "${filename.substringBeforeLast(".")}.$outputFormat"
         val outputPath = "${System.getProperty("user.dir")}/$outputFilename"
 
+        val (width, height) = resolutionMap[outputSize] ?: throw IllegalArgumentException("Invalid resolution")
+
         println("Обработка $filename...")
 
-        val command = listOf(
-            ffmpegHandler.getPath(),
-            "-i", inputPath,
-            "-vf", "scale=w=640:h=480:force_original_aspect_ratio=decrease",
-            "-y", outputPath
-        )
+        // Build the FFmpeg command using the wrapper
+        val builder = FFmpegBuilder()
+            .setInput(inputPath)
+            .addOutput(outputPath)
+            .setFormat(outputFormat)
+            .setVideoResolution(width, height)
+            .done()
 
-        process = ProcessBuilder(command)
-            .redirectErrorStream(true) // Combine error and output streams
-            .start()
+        val executor = FFmpegExecutor(ffmpegHandler.getFFmpeg(), ffmpegHandler.getFFprobe())
 
-        // Run in a loop to read the process output and check for cancellation
-        coroutineScope {
-            val outputJob = launch {
-                process!!.inputStream.bufferedReader().use { reader ->
-                    reader.lines().forEach { line ->
-                        println(line) // Print each line from the FFmpeg output
-                    }
+        val probe: FFmpegProbeResult = ffmpegHandler.getFFprobe().probe(inputPath)
+        val totalDuration = probe.format.duration // получаем длительность видео
+
+        // Execute the FFmpeg command with a progress listener
+        executor.createJob(builder, object : ProgressListener {
+            override fun progress(progress: Progress) {
+                val percentage = progress.out_time_ns / 1_000_000_000.0 / totalDuration
+                Platform.runLater {
+                    progressBar.progress = percentage
                 }
             }
+        }).run()
 
-            // Wait for the process to finish or be canceled
-            withContext(Dispatchers.IO) {
-                try {
-                    val exitCode = process!!.waitFor()
-                    if (exitCode == 0) {
-                        println("Видео $filename успешно сжато и сохранено как $outputFilename")
-                    } else {
-                        println("Ошибка при обработке видео $filename")
-                    }
-                } catch (e: InterruptedException) {
-                    // If interrupted, destroy the process
-                    process?.destroyForcibly() // Use destroyForcibly to ensure termination
-                    println("Процесс сжатия видео был прерван.")
-                    throw CancellationException("Compression canceled")
-                } finally {
-                    outputJob.cancel() // Cancel output reading
-                }
-            }
-        }
-    }
-
-    fun cancel() {
-        process?.destroyForcibly() // Ensure to forcibly destroy the FFmpeg process if it exists
-        process = null // Clear the reference to the process
-        println("Все процессы конвертации отменены.")
+        println("Видео $filename успешно сжато и сохранено как $outputFilename")
     }
 }

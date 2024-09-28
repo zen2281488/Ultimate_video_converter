@@ -17,6 +17,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-javafx:1.7.3")
     implementation("org.openjfx:javafx-controls:17")
     implementation("org.openjfx:javafx-fxml:17")
+    implementation("net.bramp.ffmpeg:ffmpeg:0.8.0")
+
 }
 
 javafx {
